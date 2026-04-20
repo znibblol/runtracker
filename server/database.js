@@ -17,15 +17,35 @@ if (!existsSync(dbDir)) {
 
 const db = new Database(join(dbDir, 'runtracker.db'));
 
-// Create table
+// Create tables
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     distance REAL NOT NULL,
     image_path TEXT NOT NULL,
     date TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    user_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id)
   )
 `);
+
+// Check if runs table has user_id, if not (existing db), add it
+const tableInfo = db.prepare("PRAGMA table_info(runs)").all();
+const hasUserId = tableInfo.some(column => column.name === 'user_id');
+
+if (!hasUserId) {
+  db.exec("ALTER TABLE runs ADD COLUMN user_id INTEGER REFERENCES users(id)");
+}
+
 
 export default db;

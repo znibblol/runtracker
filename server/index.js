@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
@@ -55,10 +57,67 @@ const upload = multer({
 
 // API Routes
 
-// Get all runs
-app.get('/api/runs', (req, res) => {
+const JWT_SECRET = process.env.JWT_SECRET || 'supersecretkey_for_runtracker_dev';
+
+// Auth Middleware
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  
+  if (!token) return res.status(401).json({ error: 'Access denied. No token provided.' });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid token.' });
+    req.user = user;
+    next();
+  });
+};
+
+// --- Auth Routes ---
+
+app.post('/api/auth/register', async (req, res) => {
   try {
-    const runs = db.prepare('SELECT * FROM runs ORDER BY date DESC').all();
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+
+    // Check if user exists
+    const existingUser = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+    if (existingUser) return res.status(400).json({ error: 'Username already taken' });
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const stmt = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)');
+    const result = stmt.run(username, hashedPassword);
+
+    const token = jwt.sign({ id: result.lastInsertRowid, username }, JWT_SECRET, { expiresIn: '7d' });
+    res.status(201).json({ token, username });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+    if (!user) return res.status(400).json({ error: 'Invalid username or password' });
+
+    const validPassword = await bcrypt.compare(password, user.password_hash);
+    if (!validPassword) return res.status(400).json({ error: 'Invalid username or password' });
+
+    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, username: user.username });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// --- Run Routes ---
+
+// Get all runs (for logged-in user)
+app.get('/api/runs', authenticateToken, (req, res) => {
+  try {
+    const runs = db.prepare('SELECT * FROM runs WHERE user_id = ? ORDER BY date DESC').all(req.user.id);
     res.json(runs);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -66,14 +125,15 @@ app.get('/api/runs', (req, res) => {
 });
 
 // Add a new run
-app.post('/api/runs', upload.single('image'), (req, res) => {
+app.post('/api/runs', authenticateToken, upload.single('image'), (req, res) => {
   try {
     const { distance } = req.body;
     const imagePath = req.file.filename;
     const date = new Date().toISOString();
+    const userId = req.user.id;
 
-    const stmt = db.prepare('INSERT INTO runs (distance, image_path, date) VALUES (?, ?, ?)');
-    const result = stmt.run(parseFloat(distance), imagePath, date);
+    const stmt = db.prepare('INSERT INTO runs (distance, image_path, date, user_id) VALUES (?, ?, ?, ?)');
+    const result = stmt.run(parseFloat(distance), imagePath, date, userId);
 
     const newRun = db.prepare('SELECT * FROM runs WHERE id = ?').get(result.lastInsertRowid);
     res.status(201).json(newRun);
@@ -83,9 +143,14 @@ app.post('/api/runs', upload.single('image'), (req, res) => {
 });
 
 // Delete a run
-app.delete('/api/runs/:id', (req, res) => {
+app.delete('/api/runs/:id', authenticateToken, (req, res) => {
   try {
     const { id } = req.params;
+    
+    // Ensure the run belongs to the logged-in user
+    const run = db.prepare('SELECT * FROM runs WHERE id = ? AND user_id = ?').get(id, req.user.id);
+    if (!run) return res.status(404).json({ error: 'Run not found or unauthorized' });
+
     const stmt = db.prepare('DELETE FROM runs WHERE id = ?');
     stmt.run(id);
     res.status(204).send();

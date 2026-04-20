@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import './UploadForm.css'
 
-function UploadForm({ onRunAdded }) {
+function UploadForm({ onRunAdded, token }) {
   const [distance, setDistance] = useState('')
   const [image, setImage] = useState(null)
   const [preview, setPreview] = useState(null)
@@ -32,6 +32,9 @@ function UploadForm({ onRunAdded }) {
     try {
       const response = await fetch('/api/runs', {
         method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
         body: formData,
       })
 
